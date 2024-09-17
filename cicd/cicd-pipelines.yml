@@ -1,0 +1,72 @@
+# Trigger the pipeline when changes are pushed to the main branch
+trigger:
+  - main
+
+# Define variable groups for development and production environments
+variables:
+  - group: dbw-cicd-dev     # Variable group for development environment
+  - group: dbw-cicd-prod    # Variable group for production environment
+
+  - name: vmImageName       # Specify the virtual machine image for the pipeline
+    value: "windows-latest"
+  - name: notebooksPath     # Path to notebooks directory
+    value: "notebooks"
+
+# Define the build agent pool and image to be used
+pool: 
+  vmImage: $(vmImageName)
+
+# Add conditional error handling for failed stages and retry logic
+stages:
+  - stage: Deploy_to_Dev_Environment
+    jobs:
+      - job: Deploy
+        pool: 
+          vmImage: $(vmImageName)
+        steps:
+          - template: templates/deploy-notebooks.yml
+            parameters:
+              stageId: "Deploy_to_Dev_Environment"
+              env: "dev"
+              environmentName: $(dev-environment-name)
+              resourceGroupName: $(dev-resource-group-name)
+              serviceConnection: $(dev-service-connection-name)
+              databricksPath: $(dev-databricks-path)
+              notebooksPath: $(notebooksPath)
+
+  # Add testing stage after deploying to dev to validate notebooks
+  - stage: Run_Tests
+    dependsOn: Deploy_to_Dev_Environment
+    condition: succeeded()  # Only run this stage if the previous stage succeeded
+    jobs:
+      - job: RunTests
+        steps:
+          - script: |
+              echo "Running notebook tests..."
+              # Add actual notebook validation scripts here
+            displayName: "Test Notebooks in Dev Environment"
+
+  # Conditional deployment to production only if tests pass
+  - stage: Deploy_to_Prod_Environment
+    dependsOn: Run_Tests
+    condition: succeeded()  # Deploy to production only if tests succeed
+    jobs:
+      - job: Deploy
+        steps:
+          - template: templates/deploy-notebooks.yml
+            parameters:
+              stageId: "Deploy_to_Prod_Environment"
+              env: "prod"
+              environmentName: $(prod-environment-name)
+              resourceGroupName: $(prod-resource-group-name)
+              serviceConnection: $(prod-service-connection-name)
+              databricksPath: $(prod-databricks-path)
+              notebooksPath: $(notebooksPath)
+
+# Publish artifacts for logs and deployed notebooks
+- task: PublishPipelineArtifact@1
+  inputs:
+    targetPath: $(Build.ArtifactStagingDirectory)
+    artifact: NotebookArtifacts
+    publishLocation: "Container"
+  displayName: "Publish deployment logs and notebooks"

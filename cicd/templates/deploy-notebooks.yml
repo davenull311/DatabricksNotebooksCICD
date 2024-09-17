@@ -1,0 +1,61 @@
+parameters:
+  - name: stageId              # Unique stage ID
+    type: string
+  - name: dependsOn            # Stages this depends on (optional)
+    type: object
+    default: []
+  - name: env                  # Environment name (dev/prod)
+    type: string
+  - name: environmentName      # Name of the Azure environment
+    type: string
+  - name: resourceGroupName    # Azure resource group
+    type: string
+  - name: serviceConnection    # Azure service connection
+    type: string
+  - name: databricksPath       # Databricks path to deploy notebooks
+    type: string
+  - name: notebooksPath        # Local path to the notebooks
+    type: string
+
+stages:
+  - stage: "${{ parameters.stageId }}"
+    displayName: "Deploying to [${{upper(parameters.env)}}] Environment"
+    dependsOn: ${{ parameters.dependsOn }}  # Only runs after the previous stage(s)
+    jobs: 
+      - deployment: Deploy
+        displayName: "Deploying Databricks Notebooks"
+        environment: ${{parameters.environmentName}}
+        strategy:
+          runOnce:
+            deploy:
+              steps: 
+                - checkout: self
+                - task: AzureCLI@2
+                  inputs:
+                    azureSubscription: ${{parameters.serviceConnection}}
+                    scriptType: "pscore"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      try {
+                        # Ensure dynamic install of any required Azure CLI extensions
+                        az config set extension.use_dynamic_install=yes_without_prompt
+
+                        # Get Databricks workspace information
+                        $databricksWorkspace = (az resource list --resource-group ${{parameters.resourceGroupName}} --query "[?type=='Microsoft.Databricks/workspaces']" | ConvertFrom-Json)[0]
+                        $databricksWorkspaceInfo = (az databricks workspace show --ids $databricksWorkspace.id | ConvertFrom-Json)
+
+                        # Fetch Databricks token securely from Azure Key Vault
+                        $bearerToken = az keyvault secret show --name 'DatabricksToken' --vault-name 'YourKeyVaultName' --query value -o tsv
+
+                        # Install necessary tools for Databricks deployment
+                        Install-Module -Name azure.databricks.cicd.tools -Force -Scope CurrentUser
+                        Import-Module -Name azure.databricks.cicd.tools
+
+                        # Deploy notebooks to the Databricks workspace
+                        Import-DatabricksFolder -BearerToken $bearerToken -Region $databricksWorkspaceInfo.location -LocalPath $(Build.Repository.LocalPath)/${{parameters.notebooksPath}} -DatabricksPath ${{parameters.databricksPath}} -Clean
+                      } catch {
+                        # Catch and log any error
+                        Write-Host "Deployment failed: $_"
+                        exit 1
+                      }
+                  displayName: "Deploying Notebooks via Azure CLI"
